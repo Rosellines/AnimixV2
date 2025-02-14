@@ -18,6 +18,14 @@ function _isArray(obj) {
   }
 }
 
+function splitIdPet(num) {
+  const numStr = num.toString();
+  const firstPart = numStr.slice(0, 3); // Lấy 3 ký tự đầu tiên
+  const secondPart = numStr.slice(3); // Lấy phần còn lại
+
+  return [parseInt(firstPart), parseInt(secondPart)];
+}
+
 // Hàm để ghi đè biến môi trường
 const envFilePath = path.join(__dirname, ".env");
 function updateEnv(variable, value) {
@@ -178,4 +186,4 @@ function getOrCreateJSON(id, value, filename) {
   return item;
 }
 
-module.exports = { _isArray, getRandomNumber, updateEnv, saveToken, getToken, isExpiredToken, generateRandomHash, getRandomElement, loadData, saveData, log, getOrCreateJSON, sleep };
+module.exports = { _isArray, getRandomNumber, updateEnv, saveToken, splitIdPet, getToken, isExpiredToken, generateRandomHash, getRandomElement, loadData, saveData, log, getOrCreateJSON, sleep };

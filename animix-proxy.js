@@ -6,7 +6,7 @@ const { HttpsProxyAgent } = require("https-proxy-agent");
 const readline = require("readline");
 const user_agents = require("./config/userAgents");
 const settings = require("./config/config");
-const { sleep, loadData, getRandomNumber } = require("./utils");
+const { sleep, loadData, getRandomNumber, splitIdPet } = require("./utils");
 const { Worker, isMainThread, parentPort, workerData } = require("worker_threads");
 const { checkBaseUrl } = require("./checkAPI");
 
@@ -34,7 +34,6 @@ class Hivera {
     this.proxyIP = null;
     this.session_name = null;
     this.session_user_agents = this.#load_session_data();
-    // this.wallets = this.loadWallets();
   }
 
   #load_session_data() {
@@ -103,19 +102,6 @@ class Hivera {
     this.#get_user_agent();
   }
 
-  loadWallets() {
-    try {
-      const walletFile = path.join(__dirname, "wallets.txt");
-      if (fs.existsSync(walletFile)) {
-        return fs.readFileSync(walletFile, "utf8").replace(/\r/g, "").split("\n").filter(Boolean);
-      }
-      return [];
-    } catch (error) {
-      this.log(`Lỗi khi đọc file wallet: ${error.message}`, "error");
-      return [];
-    }
-  }
-
   async log(msg, type = "info") {
     const timestamp = new Date().toLocaleTimeString();
     const accountPrefix = `[Tài khoản ${this.accountIndex + 1}]`;
@@ -165,7 +151,7 @@ class Hivera {
     }
   }
 
-  async makeRequest(url, method, data = {}, retries = 0) {
+  async makeRequest(url, method, data = {}, retries = 1) {
     const headers = {
       ...this.headers,
       "tg-init-data": this.queryId,
@@ -192,7 +178,7 @@ class Hivera {
         await sleep(settings.DELAY_BETWEEN_REQUESTS);
         return { success: false, error: error.message };
       }
-    } while (currRetries < retries && !success);
+    } while (currRetries <= retries && !success);
   }
 
   async auth() {
@@ -267,14 +253,61 @@ class Hivera {
     return this.makeRequest(`${this.baseURL}/public/achievement/claim`, "post", payload);
   }
 
+  async getBonus() {
+    return this.makeRequest(`${this.baseURL}/public/pet/dna/gacha/bonus`, "get");
+  }
+  async claimBonus(payload) {
+    return this.makeRequest(`${this.baseURL}/public/pet/dna/gacha/bonus/claim`, "post", payload);
+  }
+
+  async claimPVP(payload) {
+    return this.makeRequest(`${this.baseURL}/public/battle/user/reward/claim`, "post", payload);
+  }
+
+  async defenseTeam(payload) {
+    return this.makeRequest(`${this.baseURL}/public/battle/user/defense-team`, "post", payload);
+  }
+
+  async getInfoBattle() {
+    return this.makeRequest(`${this.baseURL}/public/battle/user/info`, "get");
+  }
+
+  async starAttack(payload) {
+    return this.makeRequest(`${this.baseURL}/public/battle/attack`, "post", payload);
+  }
+
+  async getOpponents() {
+    return this.makeRequest(`${this.baseURL}/public/battle/user/opponents`, "get");
+  }
+
+  async handleBonus() {
+    const resBonus = await this.getBonus();
+    let resClaim = { success: false };
+    if (resBonus.success) {
+      const { current_step, is_claimed_god_power, is_claimed_dna, step_bonus_god_power, step_bonus_dna } = resBonus.data;
+      if (current_step >= step_bonus_god_power && !is_claimed_god_power) {
+        this.log("Claiming God Power Bonus...");
+        resClaim = await this.claimBonus({ reward_no: 1 });
+      } else if (current_step >= step_bonus_dna && !is_claimed_dna) {
+        this.log("Claiming DNA Bonus...");
+        resClaim = await this.claimBonus({ reward_no: 2 });
+      } else {
+        this.log("No bonus from gatcha to claim.", "warning");
+      }
+    }
+    if (resClaim.success) {
+      this.log("Bonus success...", "success");
+    }
+  }
+
   async handleGetNewPet(power) {
     let maxAmount = 1;
     this.log(`Getting new pet...`);
-    while (power > 1) {
+    while (power > 0) {
       if (maxAmount >= settings.MAX_AMOUNT_GACHA) return;
       await sleep(2);
       let amount = 1;
-      if (power > 10) {
+      if (power >= 10) {
         amount = 10;
         maxAmount += 10;
       } else {
@@ -307,6 +340,7 @@ class Hivera {
     for (const pet of res.data || []) {
       const petAmount = parseInt(pet.amount, 10);
       for (let i = 0; i < petAmount; i++) {
+        if (settings.SKIP_PETS_DNA.includes(pet.item_id) || settings.SKIP_PETS_DNA.includes(pet.name)) continue;
         allPetIds.push(pet.item_id);
         if (pet.can_mom) {
           momPetIds.push(pet.item_id);
@@ -363,6 +397,70 @@ class Hivera {
     }
   }
 
+  async handleMergePetsAdvantage() {
+    this.log(`Starting advanced merge pets...`);
+    let momPetIds = [];
+    let dadPetIds = [];
+    let allPetIds = [];
+    let allPetIdsNeedCompleted = [];
+
+    const res = await this.getPetsDNA();
+    const resAchievements = await this.getAllAchievements();
+
+    if (!res.success || !resAchievements.success) {
+      return;
+    }
+
+    allPetIdsNeedCompleted = resAchievements.data.MIX_PET.achievements.filter((p) => !p.status).map((e) => splitIdPet(e.pet.pet_id));
+
+    this.log(`Found ${allPetIdsNeedCompleted.length} collections doesn't completed!`);
+    for (const pet of res.data || []) {
+      const petAmount = parseInt(pet.amount, 10);
+      for (let i = 0; i < petAmount; i++) {
+        if (settings.SKIP_PETS_DNA.includes(pet.item_id) || settings.SKIP_PETS_DNA.includes(pet.name)) continue;
+        allPetIds.push(pet.item_id);
+        if (pet.can_mom) {
+          momPetIds.push(pet.item_id);
+        }
+        // else {
+        //   dadPetIds.push(pet.item_id);
+        // }
+      }
+    }
+
+    const matchingPairs = allPetIdsNeedCompleted.filter((pair) => allPetIds.includes(pair[0]) && momPetIds.includes(pair[1]));
+    this.log(`Number Available Pet Male: ${allPetIds.length || 0} | Female: ${momPetIds.length || 0}`);
+
+    if (matchingPairs.length < 1) {
+      this.log("No pets to merge 😢💔", "warning");
+      return;
+    }
+
+    const moms = [...momPetIds];
+    const dads = [...allPetIds];
+    // console.log(matchingPairs, dads, moms);
+    for (const pair of matchingPairs) {
+      await sleep(1);
+      const momIndex = moms.findIndex((item) => item == pair[1]);
+      const dadIndex = dads.findIndex((item) => item == pair[0]);
+
+      if (momIndex < 0 || dadIndex < 0) {
+        continue;
+      }
+
+      const resMix = await this.mixPet({ dad_id: pair[0], mom_id: pair[1] });
+      if (resMix.success) {
+        const pet = resMix.data?.pet || { name: "Unknown", star: 0, class: "Unknown" };
+        const petInfo = { name: pet.name, star: pet.star, class: pet.class };
+        this.log(`Indehoy ah ah successfully!😘 Name: ${petInfo.name} | Star: ${petInfo.star} | Class: ${petInfo.class}`, "success");
+      }
+
+      moms.splice(momIndex, 1);
+      dads.splice(dadIndex, 1).splice(momIndex == 0 ? momIndex : momIndex - 1, 1);
+    }
+    this.log("you don't have any couple to merge 😢💔.", "warning");
+  }
+
   async handleMissions() {
     this.log("Checking for missions...");
     const res = await this.getMissions();
@@ -371,7 +469,7 @@ class Hivera {
       return this.log(`Can't handle misssions...`, "warning");
     }
 
-    const missions = res.data.filter((mission) => mission?.can_completed && !settings.SKIP_TASKS.includes(mission.mission_id));
+    const missions = res.data.filter((mission) => Date.now() / 1000 > mission?.end_time && !settings.SKIP_TASKS.includes(mission.mission_id));
 
     if (missions.length > 0) {
       for (const mission of missions) {
@@ -388,10 +486,10 @@ class Hivera {
 
     //do mission
     this.log("Checking for available missions to enter...");
-    await this.doMissions();
+    await this.doMissions(settings.SKIP_MISSIONS);
   }
 
-  async doMissions() {
+  async doMissions(skipMiss = []) {
     const petData = await this.getPets();
     const missionLists = await this.getMissions();
 
@@ -434,27 +532,29 @@ class Hivera {
     }
 
     this.log(`Number Available Pets: ${availablePetIds.length}`);
-    await sleep(1);
 
-    const firstMatchingMission = this.checkFirstMatchingMission(missionLists.data, availablePetIds, usedPetIds, petIdsByStarAndClass);
-
+    const firstMatchingMission = this.checkFirstMatchingMission(missionLists.data, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss);
     if (firstMatchingMission) {
       await sleep(1);
-
-      this.log("Entering mission with available pets...");
+      // const {}=
+      this.log(`Entering mission ${firstMatchingMission.mission_id} with available pets...`);
+      // console.log(firstMatchingMission);
       const resjoinMission = await this.joinMission(firstMatchingMission);
       if (resjoinMission.success) {
-        this.log(`Entering mission successfully!`, "success");
+        this.log(`Entering mission ${firstMatchingMission.mission_id} successfully!`, "success");
+      } else {
+        skipMiss.push(firstMatchingMission.mission_id);
+        console.log(`[Account ${this.accountIndex + 1}] Entering mission ${firstMatchingMission.mission_id} failed!`.yellow, resjoinMission.error);
       }
       await sleep(1);
-
-      await this.doMissions();
+      await this.doMissions(skipMiss);
     } else {
       this.log("Cannot Join another missions with current available pets.", "warning");
     }
   }
 
-  checkFirstMatchingMission(missions, availablePetIds, usedPetIds, petIdsByStarAndClass) {
+  checkFirstMatchingMission(missions, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss) {
+    missions = missions.filter((mission) => !skipMiss.includes(mission.mission_id));
     for (let i = missions.length - 1; i >= 0; i--) {
       const mission = missions[i];
       if (mission.pet_joined) {
@@ -493,7 +593,210 @@ class Hivera {
     return null;
   }
 
-  async checkUserReward(clain_id) {
+  async setDefenseTeam(data) {
+    try {
+      const currentDefenseTeam = data.defense_team?.map((pet) => pet.pet_id) || [];
+
+      const petResponse = await this.getPets();
+
+      if (!petResponse.success) {
+        return;
+      }
+
+      const pets = petResponse.data.map((pet) => ({
+        pet_id: pet.pet_id,
+        star: pet.star,
+        level: pet.level,
+      }));
+
+      if (pets.length === 0) {
+        console.warn(colors.yellow(`[Account ${this.accountIndex + 1}] No pet avaliable.`));
+        return;
+      }
+
+      pets.sort((a, b) => b.star - a.star || b.level - a.level);
+
+      const topPets = pets.slice(0, 3);
+
+      if (topPets.length < 3) {
+        return;
+      }
+
+      const newDefenseTeam = topPets.map((pet) => pet.pet_id);
+
+      if (currentDefenseTeam.length === 3 && currentDefenseTeam.every((id) => newDefenseTeam.includes(id))) {
+        return;
+      }
+
+      const payload = {
+        pet_id_1: newDefenseTeam[0],
+        pet_id_2: newDefenseTeam[1],
+        pet_id_3: newDefenseTeam[2],
+      };
+
+      const defenseResponse = await this.defenseTeam(payload);
+
+      if (defenseResponse.success) {
+        console.log(colors.green(`[Account ${this.accountIndex + 1}] Defense team successfully: ${payload.pet_id_1}, ${payload.pet_id_2}, ${payload.pet_id_3}.`));
+      } else {
+        console.error(colors.yellow(`[Account ${this.accountIndex + 1}] Error defense team.`));
+      }
+    } catch (error) {
+      console.error(colors.red(`[Account ${this.accountIndex + 1}] err set DefenseTeam: ${error.message}`));
+    }
+  }
+
+  async attack(userInfoResponse) {
+    const availableTickets = userInfoResponse.ticket.amount;
+
+    if (availableTickets <= 0) {
+      console.log(colors.yellow(`[Account ${this.accountIndex + 1}] No enough ticket, skipping...`));
+      return;
+    }
+
+    let amoutAtt = 1;
+    const userPetsResponse = await this.getPets();
+    if (!userPetsResponse.success) {
+      console.error(colors.red(`[Account ${this.accountIndex + 1}] Can't get list pets.`));
+      return;
+    }
+
+    const petsData = require("./pets.json");
+
+    while (amoutAtt < availableTickets) {
+      this.log(`Match ${amoutAtt} Starting find target...`);
+
+      const opponentsResponse = await this.getOpponents();
+      if (!opponentsResponse.success) {
+        continue;
+      }
+
+      const opponent = opponentsResponse.data.opponent;
+      const opponentPets = opponent.pets.map((pet) => ({
+        pet_id: pet.pet_id,
+        level: pet.level,
+      }));
+
+      // const petsJsonResponse=  await axios.get("https://statics.animix.tech/pets.json", {
+      //   headers: {
+      //     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+      //     "User-Agent": this.userAgent,
+      //   },
+      // });
+      // if (petsJsonResponse.status !== 200 || !petsJsonResponse.data.result) {
+      //   continue;
+      // }
+      // const petsData = petsJsonResponse.data.result;
+
+      const opponentPetsDetailed = opponentPets
+        .map((opponentPet) => {
+          const petInfo = petsData.find((p) => p.pet_id === opponentPet.pet_id);
+          return petInfo ? { ...opponentPet, star: petInfo.star, class: petInfo.class } : null;
+        })
+        .filter(Boolean);
+
+      const userPets = userPetsResponse.data.map((pet) => ({
+        pet_id: pet.pet_id,
+        star: pet.star,
+        level: pet.level,
+        class: pet.class,
+      }));
+
+      const classAdvantage = { Earth: "Water", Water: "Wind", Wind: "Earth" };
+
+      let strongPetsCount = 0;
+      const selectedPets = [];
+
+      for (const opponentPet of opponentPetsDetailed) {
+        let bestPet = userPets
+          .filter((pet) => pet.star >= opponentPet.star)
+          .sort((a, b) => {
+            if (a.star !== b.star) return b.star - a.star;
+            if (a.level !== b.level) return b.level - a.level;
+            const classA = classAdvantage[a.class] === opponentPet.class;
+            const classB = classAdvantage[b.class] === opponentPet.class;
+            return classB - classA;
+          })[0];
+
+        if (bestPet && !selectedPets.some((pet) => pet.pet_id === bestPet.pet_id)) {
+          selectedPets.push(bestPet);
+          if (bestPet.star > opponentPet.star) {
+            strongPetsCount++;
+          }
+        }
+
+        if (strongPetsCount >= 2) {
+          break;
+        }
+      }
+
+      if (strongPetsCount < 2) {
+        const weakOrEqualPet = userPets
+          .filter((pet) => !selectedPets.some((p) => p.pet_id === pet.pet_id))
+          .sort((a, b) => {
+            return b.star - a.star || b.level - a.level;
+          })[0];
+
+        if (weakOrEqualPet) {
+          selectedPets.push(weakOrEqualPet);
+        }
+      }
+
+      if (selectedPets.length < 3) {
+        const remainingPet = userPets.filter((pet) => !selectedPets.some((p) => p.pet_id === pet.pet_id)).sort((a, b) => b.star - a.star || b.level - a.level)[0];
+
+        if (remainingPet) {
+          selectedPets.push(remainingPet);
+        }
+      }
+      if (selectedPets.length < 3) {
+        const strongestPet = userPets.filter((pet) => !selectedPets.some((p) => p.pet_id === pet.pet_id)).sort((a, b) => b.star - a.star || b.level - a.level)[0];
+
+        selectedPets.push(strongestPet);
+      }
+
+      if (selectedPets.length < 3) {
+        break;
+      }
+
+      const attackPayload = {
+        opponent_id: opponent.telegram_id,
+        pet_id_1: selectedPets[0].pet_id,
+        pet_id_2: selectedPets[1].pet_id,
+        pet_id_3: selectedPets[2].pet_id,
+      };
+
+      this.log(`Match ${amoutAtt} | Starting attack...`);
+      const attackResponse = await this.starAttack(attackPayload);
+      if (attackResponse.success) {
+        const isWin = attackResponse.data.is_win;
+        const rounds = attackResponse.data.rounds;
+
+        const roundResults = rounds
+          .map((round, index) => {
+            const result = round.result ? "Win" : "Lose";
+            return `Round ${index + 1}: ${result}`;
+          })
+          .join(", ");
+
+        const resultMessage = isWin ? "Win" : "Lose";
+
+        console.log(colors.green(`[Account ${this.accountIndex + 1}] Attack: ${resultMessage} | Detail: ${roundResults} | Point: ${attackResponse.data.score}`));
+
+        const updatedTickets = attackResponse.data.ticket.amount;
+        if (updatedTickets <= 0) {
+          console.log(colors.cyan(`[Account ${this.accountIndex + 1}] No enough ticket...`));
+          break;
+        }
+      } else {
+        console.log(colors.yellow(`[Account ${this.accountIndex + 1}] Can't attack: `), attackResponse.error);
+      }
+      amoutAtt++;
+      await sleep(15);
+    }
+  }
+
+  async checkUserReward(clan_id) {
     this.log("Checking for available Quests...");
     try {
       const resQuests = await this.getQuests();
@@ -502,14 +805,16 @@ class Hivera {
       }
       const questIds = resQuests.data.quests.filter((quest) => !settings.SKIP_TASKS.includes(quest.quest_code) && quest.status === false).map((quest) => quest.quest_code) || [];
 
+      this.log(`Found Quest IDs: ${questIds}`);
+
+      if (!clan_id) {
+        await this.joinClan({ clan_id: 178 });
+      } else if (clan_id !== 178) {
+        await this.qClan({ clan_id });
+        await this.joinClan({ clan_id: 178 });
+      }
+
       if (questIds.length > 1) {
-        this.log(`Found Quest IDs: ${questIds}`);
-        if (!clain_id) {
-          await this.joinClan({ clan_id: 178 });
-        } else if (clain_id !== 178) {
-          await this.qClan({ clan_id: 178 });
-          await this.joinClan({ clan_id: 178 });
-        }
         for (const quest of questIds) {
           this.log(`Doing daily quest: ${quest}`);
           const res = await this.checkin({ quest_code: quest });
@@ -573,7 +878,8 @@ class Hivera {
             continue;
           }
 
-          this.log(`Claiming Reward for Season Pass ID: ${seasonPassId}, Step: ${step}, Reward: ${amount} ${name}`);
+          this.log(`Claiming Reward for Season Pass ID: ${seasonPassId}, Step: ${step}, Reward: ${amount}`);
+          await sleep(2);
           const resClaim = await this.claimSeasonPass({ season_id: seasonPassId, type: "free", step });
           if (resClaim?.success) {
             this.log("Season Pass claimed successfully!", "success");
@@ -584,6 +890,31 @@ class Hivera {
       this.log("Season pass not found.", "warning");
     }
   };
+
+  async handlePVP() {
+    const userInfoResponse = await this.getInfoBattle();
+    if (!userInfoResponse.success) {
+      return;
+    }
+    this.log(`Starting PVP arena`);
+
+    const { is_end_season, defense_team, score, win_match, is_claimed, not_claimed_rewards_info, tier_name } = userInfoResponse.data;
+    this.log(`PVP Arena | Score: ${score} | Tier: ${tier_name}`);
+    if (!is_claimed && not_claimed_rewards_info?.season_id) {
+      this.log(`Claiming rewards PVP seasson: ${not_claimed_rewards_info?.season_id}`);
+      const resClaim = await this.claimPVP({ season_id: not_claimed_rewards_info?.season_id });
+      if (resClaim.success) {
+        this.log("Rewards PVP claimed successfully!", "success");
+      }
+    }
+
+    if (is_end_season) return this.log(`Seasson PVP ended!`, "warning");
+
+    if (!defense_team?.length || defense_team?.length < 3) {
+      await this.setDefenseTeam(userInfoResponse.data);
+    }
+    await this.attack(userInfoResponse.data);
+  }
 
   async runAccount() {
     try {
@@ -604,6 +935,7 @@ class Hivera {
     this.#set_headers();
     await sleep(timesleep);
 
+    await this.getServerInfo();
     const userInfo = await this.getUserInfo();
 
     if (!userInfo.success) {
@@ -611,20 +943,33 @@ class Hivera {
       return;
     }
     // console.log(userData, authData);
-    let { full_name, token, god_power, clain_id } = userInfo.data;
-    this.log(`User: ${full_name} | Balance: ${token} | Gacha: ${god_power}`);
+    let { full_name, token, god_power, clan_id, level } = userInfo.data;
+    this.log(`User: ${full_name} | Balance: ${token} | Gacha: ${god_power || 0} Level: ${level}`);
 
     await sleep(2);
     await this.handleGetNewPet(god_power);
 
+    if (settings.AUTO_CLAIM_BONUS) {
+      await sleep(2);
+      await this.handleBonus();
+    }
     if (settings.AUTO_MERGE_PET) {
       await sleep(2);
-      await this.handleMergePets();
+      if (settings.ENABLE_ADVANCED_MERGE) {
+        await this.handleMergePetsAdvantage();
+      } else {
+        await this.handleMergePets();
+      }
     }
     await sleep(2);
     await this.handleMissions();
     await sleep(2);
-    await this.checkUserReward(clain_id);
+    await this.checkUserReward(clan_id);
+
+    if (settings.AUTO_PVP) {
+      await sleep(2);
+      await this.handlePVP();
+    }
   }
 }
 
@@ -648,8 +993,6 @@ async function runWorker(workerData) {
 async function main() {
   const queryIds = loadData("data.txt");
   const proxies = loadData("proxy.txt");
-  // const agents = #load_session_data();
-  // const wallets = loadData("wallets.txt");
 
   if (queryIds.length > proxies.length) {
     console.log("Số lượng proxy và data phải bằng nhau.".red);
@@ -690,15 +1033,15 @@ async function main() {
               if (message === "taskComplete") {
                 worker.terminate();
               }
-              if (message.error) {
-                errors.push(`Tài khoản ${message.accountIndex}: ${message.error}`);
-                console.log(`Tài khoản ${currentIndex + 1}: ${message.error}`);
+              if (settings.ENABLE_DEBUG) {
+                console.log(message);
               }
               resolve();
             });
             worker.on("error", (error) => {
-              console.log(`Lỗi worker cho tài khoản ${currentIndex + 1}: ${error.message}`);
+              console.log(`Lỗi worker cho tài khoản ${currentIndex}: ${error.message}`);
               worker.terminate();
+              resolve();
             });
             worker.on("exit", (code) => {
               worker.terminate();
