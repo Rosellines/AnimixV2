@@ -173,7 +173,10 @@ class Hivera {
         success = true;
         return { success: true, data: response.data.result };
       } catch (error) {
-        this.log(`Yêu cầu thất bại: ${url} | ${error.message} | đang thử lại...`, "warning");
+        if (error.status == 400) {
+          return { success: false, error: "Bad request" };
+        }
+        this.log(`Yêu cầu thất bại: ${url} | ${error?.response?.data?.message || error.message} | đang thử lại...`, "warning");
         success = false;
         await sleep(settings.DELAY_BETWEEN_REQUESTS);
         return { success: false, error: error.message };
@@ -462,7 +465,7 @@ class Hivera {
   }
 
   async handleMissions() {
-    this.log("Checking for missions...");
+    this.log("Checking for missions...".cyan);
     const res = await this.getMissions();
 
     if (!res.success) {
@@ -492,12 +495,13 @@ class Hivera {
   async doMissions(skipMiss = []) {
     const petData = await this.getPets();
     const missionLists = await this.getMissions();
-
+    const allMissions = require("./missions.json");
     if (!petData.success || !missionLists.success) {
       return;
     }
     const petIdsByStarAndClass = {};
     const allPetIds = [];
+    const availableMissions = allMissions.filter((mission) => !skipMiss.includes(mission.mission_id) && missionLists.data.every((m) => m.mission_id != mission.mission_id));
 
     for (const pet of petData.data || []) {
       if (!petIdsByStarAndClass[pet.star]) petIdsByStarAndClass[pet.star] = {};
@@ -532,8 +536,7 @@ class Hivera {
     }
 
     this.log(`Number Available Pets: ${availablePetIds.length}`);
-
-    const firstMatchingMission = this.checkFirstMatchingMission(missionLists.data, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss);
+    const firstMatchingMission = this.checkFirstMatchingMission(availableMissions, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss);
     if (firstMatchingMission) {
       await sleep(1);
       // const {}=
@@ -554,7 +557,6 @@ class Hivera {
   }
 
   checkFirstMatchingMission(missions, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss) {
-    missions = missions.filter((mission) => !skipMiss.includes(mission.mission_id));
     for (let i = missions.length - 1; i >= 0; i--) {
       const mission = missions[i];
       if (mission.pet_joined) {
@@ -583,7 +585,6 @@ class Hivera {
       assignPet(mission.pet_1_class, mission.pet_1_star, "pet_1_id");
       assignPet(mission.pet_2_class, mission.pet_2_star, "pet_2_id");
       assignPet(mission.pet_3_class, mission.pet_3_star, "pet_3_id");
-
       if (petIds.pet_1_id && petIds.pet_2_id && petIds.pet_3_id) {
         const matchingMission = { mission_id: mission.mission_id, ...petIds };
         return matchingMission;
@@ -663,7 +664,7 @@ class Hivera {
 
     const petsData = require("./pets.json");
 
-    while (amoutAtt < availableTickets) {
+    while (amoutAtt <= availableTickets) {
       this.log(`Match ${amoutAtt} Starting find target...`);
 
       const opponentsResponse = await this.getOpponents();
@@ -1069,7 +1070,7 @@ async function main() {
     const to = new Hivera(null, 0, proxies[0], hasIDAPI);
     await sleep(3);
     console.log("Tool được phát triển bởi nhóm tele Airdrop Hunter Siêu Tốc (https://t.me/airdrophuntersieutoc)".yellow);
-    console.log(`=============Hoàn thành tất cả tài khoản | Chờ ${settings.TIME_SLEEP} phút=============`.magenta);
+    console.log(`=============[${new Date().toLocaleTimeString()}] Hoàn thành tất cả tài khoản | Chờ ${settings.TIME_SLEEP} phút=============`.magenta);
     if (settings.AUTO_SHOW_COUNT_DOWN_TIME_SLEEP) {
       await to.countdown(settings.TIME_SLEEP * 60);
     } else {

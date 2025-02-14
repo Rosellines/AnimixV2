@@ -230,6 +230,10 @@ class Animix {
     return this.makeRequest(`${this.baseURL}/public/pet/dna/gacha/bonus/claim`, "post", payload);
   }
 
+  async claimPVP(payload) {
+    return this.makeRequest(`${this.baseURL}/public/battle/user/reward/claim`, "post", payload);
+  }
+
   async defenseTeam(payload) {
     return this.makeRequest(`${this.baseURL}/public/battle/user/defense-team`, "post", payload);
   }
@@ -612,12 +616,14 @@ class Animix {
   async doMissions(skipMiss = []) {
     const petData = await this.getPets();
     const missionLists = await this.getMissions();
+    const allMissions = require("./missions.json");
 
     if (!petData.success || !missionLists.success) {
       return;
     }
     const petIdsByStarAndClass = {};
     const allPetIds = [];
+    const availableMissions = allMissions.filter((mission) => !skipMiss.includes(mission.mission_id) && missionLists.data.every((m) => m.mission_id != mission.mission_id));
 
     for (const pet of petData.data || []) {
       if (!petIdsByStarAndClass[pet.star]) petIdsByStarAndClass[pet.star] = {};
@@ -653,7 +659,7 @@ class Animix {
 
     this.log(`Number Available Pets: ${availablePetIds.length}`);
 
-    const firstMatchingMission = this.checkFirstMatchingMission(missionLists.data, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss);
+    const firstMatchingMission = this.checkFirstMatchingMission(availableMissions, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss);
     if (firstMatchingMission) {
       await sleep(1);
       // const {}=
@@ -674,7 +680,6 @@ class Animix {
   }
 
   checkFirstMatchingMission(missions, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss) {
-    missions = missions.filter((mission) => !skipMiss.includes(mission.mission_id));
     for (let i = missions.length - 1; i >= 0; i--) {
       const mission = missions[i];
       if (mission.pet_joined) {
@@ -781,7 +786,7 @@ class Animix {
       return;
     }
     const petsData = require("./pets.json");
-    while (amoutAtt < availableTickets) {
+    while (amoutAtt <= availableTickets) {
       this.log(`Match ${amoutAtt} Starting find target...`);
 
       const opponentsResponse = await this.getOpponents();
@@ -1014,8 +1019,17 @@ class Animix {
     }
     this.log(`Starting PVP arena`);
 
-    const { is_end_season, defense_team, score, win_match, is_claimed, tier_name } = userInfoResponse.data;
-    this.log(`PVP Arena | Score: ${score} | Win: ${win_match} | Tier: ${tier_name}`);
+    const { is_end_season, defense_team, score, win_match, not_claimed_rewards_info, is_claimed, tier_name } = userInfoResponse.data;
+    this.log(`PVP Arena | Score: ${score} |  Tier: ${tier_name}`);
+
+    if (!is_claimed && not_claimed_rewards_info?.season_id) {
+      this.log(`Claiming rewards PVP seasson: ${not_claimed_rewards_info?.season_id}`);
+      const resClaim = await this.claimPVP({ season_id: not_claimed_rewards_info?.season_id });
+      if (resClaim.success) {
+        this.log("Rewards PVP claimed successfully!", "success");
+      }
+    }
+
     if (is_end_season) return this.log(`Seasson PVP ended!`, "warning");
 
     if (!defense_team?.length || defense_team?.length < 3) {
@@ -1104,7 +1118,7 @@ async function main() {
       await Promise.allSettled(promises);
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
-    console.log(`Hoàn thành tất cả tài khoản | Chờ ${settings.TIME_SLEEP} phút=============`.magenta);
+    console.log(`[${new Date().toLocaleTimeString()}] Hoàn thành tất cả tài khoản | Chờ ${settings.TIME_SLEEP} phút=============`.magenta);
     if (settings.AUTO_SHOW_COUNT_DOWN_TIME_SLEEP) {
       await wait(settings.TIME_SLEEP * 60);
     } else {
