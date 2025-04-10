@@ -1,10 +1,11 @@
 const fs = require("fs");
 const colors = require("colors");
-const { DateTime } = require("luxon");
 const path = require("path");
-
 require("dotenv").config();
-
+const { jwtDecode } = require("jwt-decode");
+const fsPromises = require("fs").promises; // Sử dụng fs.promises
+const AsyncLock = require("async-lock");
+const lock = new AsyncLock();
 function _isArray(obj) {
   if (Array.isArray(obj) && obj.length > 0) {
     return true;
@@ -16,6 +17,17 @@ function _isArray(obj) {
   } catch (e) {
     return false;
   }
+}
+
+function parseQueryString(query) {
+  const params = new URLSearchParams(query);
+  const parsedQuery = {};
+
+  for (const [key, value] of params) {
+    parsedQuery[key] = decodeURIComponent(value);
+  }
+
+  return parsedQuery;
 }
 
 function splitIdPet(num) {
@@ -35,10 +47,10 @@ function updateEnv(variable, value) {
       console.log("Không thể đọc file .env:", err);
       return;
     }
-    console.log(value, variable);
+
     // Tạo hoặc cập nhật biến trong file
     const regex = new RegExp(`^${variable}=.*`, "m");
-    const newData = data.replace(regex, `${variable}=${value}`);
+    let newData = data.replace(regex, `${variable}=${value}`); // Sử dụng let thay vì const
 
     // Kiểm tra nếu biến không tồn tại trong file, thêm vào cuối
     if (!regex.test(data)) {
@@ -50,7 +62,7 @@ function updateEnv(variable, value) {
       if (err) {
         console.error("Không thể ghi file .env:", err);
       } else {
-        console.log(`Đã cập nhật ${variable} thành ${value}`);
+        // console.log(`Đã cập nhật ${variable} thành ${value}`);
       }
     });
   });
@@ -59,7 +71,7 @@ function updateEnv(variable, value) {
 function sleep(seconds = null) {
   if (seconds && typeof seconds === "number") return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 
-  let DELAY_BETWEEN_REQUESTS = process.env.DELAY_BETWEEN_REQUESTS && _isArray(process.env.DELAY_BETWEEN_REQUESTS) ? JSON.parse(process.env.DELAY_BETWEEN_REQUESTS) : [1, 5];
+  let DELAY_BETWEEN_REQUESTS = [1, 5];
   if (seconds && Array.isArray(seconds)) {
     DELAY_BETWEEN_REQUESTS = seconds;
   }
@@ -72,38 +84,41 @@ function sleep(seconds = null) {
   });
 }
 
+function randomDelay() {
+  return new Promise((resolve) => {
+    const minDelay = process.env.DELAY_REQUEST_API[0];
+    const maxDelay = process.env.DELAY_REQUEST_API[1];
+    const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+    setTimeout(resolve, delay * 1000);
+  });
+}
+
 function saveToken(id, token) {
-  const tokens = JSON.parse(fs.readFileSync("token.json", "utf8"));
+  const tokens = JSON.parse(fs.readFileSync("tokens.json", "utf8"));
   tokens[id] = token;
-  fs.writeFileSync("token.json", JSON.stringify(tokens, null, 4));
+  fs.writeFileSync("tokens.json", JSON.stringify(tokens, null, 4));
 }
 
 function getToken(id) {
-  const tokens = JSON.parse(fs.readFileSync("token.json", "utf8"));
+  const tokens = JSON.parse(fs.readFileSync("tokens.json", "utf8"));
   return tokens[id] || null;
 }
-
-function isExpiredToken(token) {
-  const [header, payload, sign] = token.split(".");
-  const decodedPayload = Buffer.from(payload, "base64").toString();
+function isTokenExpired(token) {
+  if (!token) return { isExpired: true, expirationDate: new Date().toLocaleString() };
 
   try {
-    const parsedPayload = JSON.parse(decodedPayload);
-    const now = Math.floor(DateTime.now().toSeconds());
+    const payload = jwtDecode(token);
+    if (!payload) return true;
 
-    if (parsedPayload.exp) {
-      const expirationDate = DateTime.fromSeconds(parsedPayload.exp).toLocal();
-      this.log(colors.cyan(`Token hết hạn vào: ${expirationDate.toFormat("yyyy-MM-dd HH:mm:ss")}`));
-      const isExpired = now > parsedPayload.exp;
-      this.log(colors.cyan(`Token đã hết hạn chưa? ${isExpired ? "Đúng rồi bạn cần thay token" : "Chưa..chạy tẹt ga đi"}`));
-      return isExpired;
-    } else {
-      this.log(colors.yellow(`Token vĩnh cửu không đọc được thời gian hết hạn`));
-      return false;
-    }
+    const now = Math.floor(Date.now() / 1000);
+
+    const expirationDate = new Date(payload.exp * 1000).toLocaleString();
+    const isExpired = now > payload.exp;
+
+    return { isExpired, expirationDate };
   } catch (error) {
-    this.error(colors.red(`Lỗi rồi: ${error.message}`));
-    return true;
+    console.log(`Error checking token: ${error.message}`.red);
+    return { isExpired: true, expirationDate: new Date().toLocaleString() };
   }
 }
 
@@ -166,10 +181,17 @@ function log(msg, type = "info") {
   }
 }
 
-function saveItem(id, value, filename) {
-  const data = JSON.parse(fs.readFileSync(filename, "utf8"));
-  data[id] = value;
-  fs.writeFileSync(filename, JSON.stringify(data, null, 4));
+async function saveJson(id, value, filename) {
+  await lock.acquire("fileLock", async () => {
+    try {
+      const data = await fsPromises.readFile(filename, "utf8");
+      const jsonData = JSON.parse(data);
+      jsonData[id] = value;
+      await fsPromises.writeFile(filename, JSON.stringify(jsonData, null, 4));
+    } catch (error) {
+      console.error("Error saving JSON:", error);
+    }
+  });
 }
 
 function getItem(id, filename) {
@@ -182,8 +204,63 @@ function getOrCreateJSON(id, value, filename) {
   if (item) {
     return item;
   }
-  item = saveItem(id, value, filename);
+  item = saveJson(id, value, filename);
   return item;
 }
 
-module.exports = { _isArray, getRandomNumber, updateEnv, saveToken, splitIdPet, getToken, isExpiredToken, generateRandomHash, getRandomElement, loadData, saveData, log, getOrCreateJSON, sleep };
+function generateComplexId(length = 9) {
+  const chars = "0123456789";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+function getRandomNineDigitNumber() {
+  const min = 100000000; // Số 9 chữ số nhỏ nhất
+  const max = 999999999; // Số 9 chữ số lớn nhất
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function decodeJWT(token) {
+  const [header, payload, signature] = token.split(".");
+
+  // Decode Base64 URL
+  const decodeBase64Url = (str) => {
+    str = str.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(str));
+  };
+
+  const decodedHeader = decodeBase64Url(header);
+  const decodedPayload = decodeBase64Url(payload);
+
+  return {
+    header: decodedHeader,
+    payload: decodedPayload,
+    signature: signature, // You might not need to decode the signature
+  };
+}
+
+module.exports = {
+  _isArray,
+  saveJson,
+  decodeJWT,
+  generateComplexId,
+  getRandomNumber,
+  updateEnv,
+  saveToken,
+  splitIdPet,
+  getToken,
+  isTokenExpired,
+  generateRandomHash,
+  getRandomElement,
+  loadData,
+  saveData,
+  log,
+  getOrCreateJSON,
+  sleep,
+  randomDelay,
+  parseQueryString,
+  getRandomNineDigitNumber,
+};

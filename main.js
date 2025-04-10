@@ -2,37 +2,44 @@ const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
 const colors = require("colors");
+const { HttpsProxyAgent } = require("https-proxy-agent");
 const readline = require("readline");
 const user_agents = require("./config/userAgents");
-const settings = require("./config/config");
-const { sleep, loadData, splitIdPet } = require("./utils");
+const settings = require("./config/config.js");
+const { sleep, loadData, getRandomNumber, saveToken, isTokenExpired, saveJson, splitIdPet } = require("./utils.js");
+const { Worker, isMainThread, parentPort, workerData } = require("worker_threads");
 const { checkBaseUrl } = require("./checkAPI");
+const { headers } = require("./core/header.js");
+const { showBanner } = require("./core/banner.js");
+const { Wallet, ethers } = require("ethers");
+const { jwtDecode } = require("jwt-decode");
+const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+const allMissions = require("./missions.json");
 
-class Animix {
-  constructor(accountIndex, initData, session_name, baseURL) {
-    this.accountIndex = accountIndex;
-    this.queryId = initData;
-    this.headers = {
-      Accept: "application/json, text/plain, */*",
-      "Accept-Encoding": "gzip, deflate, br",
-      "Accept-Language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
-      "Content-Type": "application/json",
-      Origin: "https://tele-game.animix.tech",
-      referer: "https://tele-game.animix.tech/",
-      "Sec-Ch-Ua": '"Not/A)Brand";v="99", "Google Chrome";v="115", "Chromium";v="115"',
-      "Sec-Ch-Ua-Mobile": "?0",
-      "Sec-Ch-Ua-Platform": '"Windows"',
-      "Sec-Fetch-Dest": "empty",
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": "same-origin",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-    };
-    this.session_name = session_name;
-    this.session_user_agents = this.#load_session_data();
-    this.skipTasks = settings.SKIP_TASKS;
+let newAuthData = {};
+let REF_CODE = settings.REF_CODE;
+let numberPerRef = settings.NUMBER_PER_REF;
+
+class ClientAPI {
+  constructor(itemData, accountIndex, proxy, baseURL, authInfos) {
+    this.headers = headers;
     this.baseURL = baseURL;
+    this.baseURL_v2 = "";
+
+    this.itemData = itemData;
+    this.accountIndex = accountIndex;
+    this.proxy = proxy;
+    this.proxyIP = null;
+    this.session_name = null;
+    this.session_user_agents = this.#load_session_data();
+    this.token = null;
+    this.authInfos = authInfos;
+    this.authInfo = null;
+    // this.wallet = new ethers.Wallet(this.itemData.privateKey);
+    // this.axiosInstance = axios.create({
+    //   timeout: 60000,
+    // });
+    // this.w3 = new Web3(new Web3.providers.HttpProvider(settings.RPC_URL, proxy));
   }
 
   #load_session_data() {
@@ -59,7 +66,7 @@ class Animix {
       return this.session_user_agents[this.session_name];
     }
 
-    this.log(`Tạo user agent...`);
+    console.log(`[Tài khoản ${this.accountIndex + 1}] Tạo user agent...`.blue);
     const newUserAgent = this.#get_random_user_agent();
     this.session_user_agents[this.session_name] = newUserAgent;
     this.#save_session_data(this.session_user_agents);
@@ -87,68 +94,135 @@ class Animix {
     return "Unknown";
   }
 
-  set_headers() {
+  #set_headers() {
     const platform = this.#get_platform(this.#get_user_agent());
-    this.headers["sec-ch-ua"] = `"Not)A;Brand";v="99", "${platform} WebView";v="127", "Chromium";v="127`;
+    this.headers["sec-ch-ua"] = `Not)A;Brand";v="99", "${platform} WebView";v="127", "Chromium";v="127`;
     this.headers["sec-ch-ua-platform"] = platform;
     this.headers["User-Agent"] = this.#get_user_agent();
   }
 
+  createUserAgent() {
+    try {
+      this.session_name = this.itemData.id;
+      this.#get_user_agent();
+    } catch (error) {
+      this.log(`Can't create user agent: ${error.message}`, "error");
+      return;
+    }
+  }
+
   async log(msg, type = "info") {
-    const accountPrefix = `[Account ${this.accountIndex + 1}]`;
+    const accountPrefix = `[Animix][Account ${this.accountIndex + 1}][${this.itemData.first_name || ""} ${this.itemData.last_name || ""}]`;
+    let ipPrefix = "[Local IP]";
+    if (settings.USE_PROXY) {
+      ipPrefix = this.proxyIP ? `[${this.proxyIP}]` : "[Unknown IP]";
+    }
     let logMessage = "";
 
     switch (type) {
       case "success":
-        logMessage = `${accountPrefix} ${msg}`.green;
+        logMessage = `${accountPrefix}${ipPrefix} ${msg}`.green;
         break;
       case "error":
-        logMessage = `${accountPrefix} ${msg}`.red;
+        logMessage = `${accountPrefix}${ipPrefix} ${msg}`.red;
         break;
       case "warning":
-        logMessage = `${accountPrefix} ${msg}`.yellow;
+        logMessage = `${accountPrefix}${ipPrefix} ${msg}`.yellow;
         break;
       case "custom":
-        logMessage = `${accountPrefix} ${msg}`.magenta;
+        logMessage = `${accountPrefix}${ipPrefix} ${msg}`.magenta;
         break;
       default:
-        logMessage = `${accountPrefix} ${msg}`.blue;
+        logMessage = `${accountPrefix}${ipPrefix} ${msg}`.blue;
     }
     console.log(logMessage);
   }
 
-  async makeRequest(url, method, data = {}, retries = 1) {
+  async checkProxyIP() {
+    try {
+      const proxyAgent = new HttpsProxyAgent(this.proxy);
+      const response = await axios.get("https://api.ipify.org?format=json", { httpsAgent: proxyAgent });
+      if (response.data.ip) {
+        this.proxyIP = response.data.ip;
+        return response.data.ip;
+      } else {
+        throw new Error(`Cannot check proxy IP. Status code: ${response.status}`);
+      }
+    } catch (error) {
+      throw new Error(`Error checking proxy IP: ${error.message}`);
+    }
+  }
+
+  async makeRequest(
+    url,
+    method,
+    data = {},
+    options = {
+      retries: 1,
+      isAuth: false,
+    }
+  ) {
+    const { retries, isAuth } = options;
+
     const headers = {
       ...this.headers,
-      "tg-init-data": this.queryId,
     };
-    let currRetries = 0,
-      success = false;
+
+    let config = {
+      headers,
+      timeout: 120000,
+    };
+
+    if (!isAuth) {
+      headers["tg-init-data"] = `${this.token}`;
+    }
+    method = method.toLowerCase();
+
+    let proxyAgent = null;
+    if (settings.USE_PROXY) {
+      proxyAgent = new HttpsProxyAgent(this.proxy);
+      config = {
+        ...config,
+        httpAgent: proxyAgent,
+        httpsAgent: proxyAgent,
+      };
+    }
+    let currRetries = 0;
     do {
       try {
         const response = await axios({
           method,
           url,
-          data,
-          headers,
-          timeout: 30000,
+          ...config,
+          ...(method.toLowerCase() != "get" ? { data: data } : {}),
         });
-        success = true;
-        return { success: true, data: response.data.result };
+
+        if (response?.data?.result) return { status: response.status, success: true, data: response.data.result };
+        return { success: true, data: response.data, status: response.status };
       } catch (error) {
-        if (error.response && error.response.status === 401) {
-          this.log("Đăng nhập thất bại. Vui lòng đăng nhập lại.", "error");
-          return { success: false, error: "Đăng nhập thất bại" };
-        } else if (error.status == 400 || error?.response?.status == 0) {
-          return { success: false, error: error?.response?.data || error.message };
+        const errorMessage = error?.response?.data || error.message;
+        this.log(`Request failed: ${url} | Status: ${error.status} | ${JSON.stringify(errorMessage || {})}...`, "error");
+        if (error.status == 401 || error.status == 403) {
+          this.log(`UnAuthenticate! Try get new query id!`, "warning");
+          await sleep(1);
+          process.exit(0);
         }
-        this.log(`Yêu cầu thất bại: ${url} | ${error.message} | đang thử lại...`, "warning");
-        success = false;
+        if (error.status == 400) {
+          this.log(`Invalid request for ${url}, maybe have new update from server | contact: https://t.me/airdrophuntersieutoc to get new update!`, "error");
+          return { success: false, status: error.status, error: errorMessage };
+        }
+        if (error.status == 429) {
+          this.log(`Rate limit ${error.message}, waiting 30s to retries`, "warning");
+          await sleep(60);
+        }
         await sleep(settings.DELAY_BETWEEN_REQUESTS);
-        if (currRetries >= retries) return { success: false, error: error?.response?.data || error.message };
+        currRetries++;
+        if (currRetries > retries) {
+          return { status: error.status, success: false, error: errorMessage };
+        }
       }
-      currRetries++;
-    } while (currRetries <= retries && !success);
+    } while (currRetries <= retries);
+    return { status: 500, success: false, error: "Unknow", data: null };
   }
 
   async auth() {
@@ -223,8 +297,8 @@ class Animix {
     return this.makeRequest(`${this.baseURL}/public/achievement/claim`, "post", payload);
   }
 
-  async getBonus() {
-    return this.makeRequest(`${this.baseURL}/public/pet/dna/gacha/bonus`, "get");
+  async getBonus(type) {
+    return this.makeRequest(`${this.baseURL}/public/pet/dna/gacha/bonus?is_super=${type == "super"}`, "get");
   }
   async claimBonus(payload) {
     return this.makeRequest(`${this.baseURL}/public/pet/dna/gacha/bonus/claim`, "post", payload);
@@ -250,30 +324,30 @@ class Animix {
     return this.makeRequest(`${this.baseURL}/public/battle/user/opponents`, "get");
   }
 
-  async handleBonus() {
-    const resBonus = await this.getBonus();
+  async handleBonus(type = "common") {
+    const resBonus = await this.getBonus(type);
     let resClaim = { success: false };
     if (resBonus.success) {
       const { current_step, is_claimed_god_power, is_claimed_dna, step_bonus_god_power, step_bonus_dna } = resBonus.data;
       if (current_step >= step_bonus_god_power && !is_claimed_god_power) {
-        this.log("Claiming God Power Bonus...");
+        this.log(`Claiming ${type} god Power Bonus...`);
         resClaim = await this.claimBonus({ reward_no: 1 });
       } else if (current_step >= step_bonus_dna && !is_claimed_dna) {
-        this.log("Claiming DNA Bonus...");
+        this.log(`[${type}] Claiming DNA Bonus...`);
         resClaim = await this.claimBonus({ reward_no: 2 });
       } else {
-        this.log("No bonus from gatcha to claim.", "warning");
+        this.log(`No bonus type ${type} from gatcha to claim.`, "warning");
       }
     }
     if (resClaim.success) {
-      this.log("Bonus success...", "success");
+      this.log(`[${type}] Bonus success...`, "success");
     }
   }
 
-  async handleGetNewPet(power) {
-    if (!power) return;
+  async handleGetNewPet(power, supper_power) {
     let maxAmount = 1;
     this.log(`Getting new pet...`);
+
     while (power > 0) {
       if (maxAmount >= settings.MAX_AMOUNT_GACHA) return;
       await sleep(2);
@@ -284,30 +358,59 @@ class Animix {
       } else {
         maxAmount++;
       }
-      const res = await this.getNewPet({ amount });
+      const res = await this.getNewPet({
+        amount,
+        is_super: false,
+      });
       if (res.success) {
-        this.log(`Get ${amount} new pets successfully!`, "success");
+        this.log(`[Common] Get ${amount} new pets successfully!`, "success");
         const pets = res.data.dna;
         for (const pet of pets) {
-          this.log(`Pet: ${pet.name} | Class: ${pet.class} | Star: ${pet.star}`, "custom");
+          this.log(`[Common] Pet: ${pet.name} | Class: ${pet.class} | Star: ${pet.star}`, "custom");
         }
         power = res.data.god_power;
       } else {
-        return this.log(`Can't get new pets!`, "warning");
+        return this.log(`[Common] Can't get new pets!`, "warning");
+      }
+    }
+
+    maxAmount = 1;
+    while (supper_power > 0) {
+      if (maxAmount >= settings.MAX_AMOUNT_GACHA) return;
+      await sleep(2);
+      let amount = 1;
+      if (supper_power >= 10) {
+        amount = 10;
+        maxAmount += 10;
+      } else {
+        maxAmount++;
+      }
+      const res = await this.getNewPet({
+        amount,
+        is_super: true,
+      });
+      if (res.success) {
+        this.log(`[Supper] Get ${amount} new pets successfully!`, "success");
+        const pets = res.data.dna;
+        for (const pet of pets) {
+          this.log(`[Supper] Pet: ${pet.name} | Class: ${pet.class} | Star: ${pet.star}`, "custom");
+        }
+        power = res.data.inventory.find((item) => item.id == 3)?.amount || 0;
+      } else {
+        return this.log(`[Supper] Can't get new pets!`, "warning");
       }
     }
   }
 
   async handleMergePets() {
-    const momPetIds = [];
-    const dadPetIds = [];
-    const allPetIds = [];
-
     const res = await this.getPetsDNA();
-
     if (!res.success) {
       return;
     }
+
+    const momPetIds = [];
+    const dadPetIds = [];
+    const allPetIds = [];
 
     for (const pet of res.data || []) {
       const petAmount = parseInt(pet.amount, 10);
@@ -333,6 +436,7 @@ class Animix {
     const dads = [...dadPetIds];
 
     while (moms.length > 0) {
+      await sleep(2);
       const momIndex = Math.floor(Math.random() * moms.length);
       const dadIndex = Math.floor(Math.random() * dads.length);
 
@@ -389,7 +493,6 @@ class Animix {
       const petAmount = parseInt(pet.amount, 10);
       for (let i = 0; i < petAmount; i++) {
         if (settings.SKIP_PETS_DNA.includes(pet.item_id) || settings.SKIP_PETS_DNA.includes(pet.name)) continue;
-
         allPetIds.push(pet.item_id);
         if (pet.can_mom) {
           momPetIds.push(pet.item_id);
@@ -411,11 +514,10 @@ class Animix {
     const moms = [...momPetIds];
     const dads = [...allPetIds];
     // console.log(matchingPairs, dads, moms);
-
     for (const pair of matchingPairs) {
       await sleep(1);
-      const dadIndex = dads.findIndex((item) => item == pair[0]);
       const momIndex = moms.findIndex((item) => item == pair[1]);
+      const dadIndex = dads.findIndex((item) => item == pair[0]);
 
       if (momIndex < 0 || dadIndex < 0) {
         continue;
@@ -434,159 +536,8 @@ class Animix {
     this.log("you don't have any couple to merge 😢💔.", "warning");
   }
 
-  async checkAvaliablePets(missions) {
-    try {
-      const petInMission = {};
-
-      for (const mission of missions) {
-        if (mission.can_completed === false) {
-          for (const joinedPet of mission.pet_joined || []) {
-            const { pet_id } = joinedPet;
-            petInMission[pet_id] = (petInMission[pet_id] || 0) + 1;
-          }
-        }
-      }
-
-      const petResponse = await this.getPets();
-      if (!petResponse.success) return null;
-      const pets = petResponse.data;
-      const availablePets = {};
-      for (const pet of pets) {
-        const key = `${pet.class}_${pet.star}`;
-        if (!availablePets[key]) {
-          availablePets[key] = [];
-        }
-
-        const availableAmount = pet.amount - (petInMission[pet.pet_id] || 0);
-        if (availableAmount > 0) {
-          availablePets[key].push({
-            pet_id: pet.pet_id,
-            star: pet.star,
-            amount: availableAmount,
-          });
-        }
-      }
-
-      return availablePets;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  async processMission() {
-    try {
-      const missionResponse = await this.getMissions();
-      if (!missionResponse.success) {
-        return;
-      }
-      const missions = missionResponse.data;
-      const availablePets = await this.checkAvaliablePets(missions);
-      if (!availablePets) {
-        console.log(`[Account ${this.accountIndex + 1}] No pet avaliable to do mission`.yellow);
-        return;
-      }
-      const canCompletedMissions = [];
-      const missionsWithoutCanCompleted = [];
-
-      for (const mission of missions) {
-        const { can_completed } = mission;
-
-        if (can_completed === true) {
-          canCompletedMissions.push(mission);
-        } else if (can_completed === undefined) {
-          missionsWithoutCanCompleted.push(mission);
-        }
-      }
-
-      for (const mission of canCompletedMissions) {
-        const { mission_id } = mission;
-        const claimPayload = { mission_id };
-        const claimResponse = await this.claimMission(claimPayload);
-
-        if (claimResponse.data.error_code === null) {
-          console.log(`[Account ${this.accountIndex + 1}] Claim mission ${mission_id} sucessfully`.green);
-        } else {
-          console.log(`[Account ${this.accountIndex + 1}] Claim mission ${mission_id} failed`.yellow);
-          continue;
-        }
-
-        await sleep(2);
-      }
-
-      const allMissionsToEnter = [...canCompletedMissions, ...missionsWithoutCanCompleted];
-
-      for (const mission of allMissionsToEnter) {
-        const { mission_id, pet_1_class, pet_1_star, pet_2_class, pet_2_star, pet_3_class, pet_3_star } = mission;
-
-        const selectedPets = [];
-        const conditions = [
-          { class: pet_1_class, star: pet_1_star },
-          { class: pet_2_class, star: pet_2_star },
-          { class: pet_3_class, star: pet_3_star },
-        ];
-
-        let canEnter = true;
-        let missingConditions = [];
-        for (const condition of conditions) {
-          const { class: petClass, star: petStar } = condition;
-          if (!petClass || !petStar) continue;
-
-          const key = `${petClass}_${petStar}`;
-          if (!availablePets[key] || availablePets[key].length === 0) {
-            canEnter = false;
-            missingConditions.push(`Miss pet ${petClass} ${petStar}`);
-            break;
-          }
-
-          let petFound = false;
-          for (const pet of availablePets[key]) {
-            if (pet.amount > 0) {
-              selectedPets.push({
-                pet_id: pet.pet_id,
-                class: petClass,
-                star: petStar,
-              });
-              pet.amount -= 1;
-              petFound = true;
-              break;
-            }
-          }
-
-          if (!petFound) {
-            canEnter = false;
-            missingConditions.push(`No enough pet ${petClass} ${petStar}`);
-            break;
-          }
-        }
-
-        if (!canEnter) {
-          continue;
-        }
-
-        const payload = {
-          mission_id,
-          pet_1_id: selectedPets[0]?.pet_id || null,
-          pet_2_id: selectedPets[1]?.pet_id || null,
-          pet_3_id: selectedPets[2]?.pet_id || null,
-        };
-        const enterResponse = await this.joinMission(payload);
-
-        if (enterResponse.success) {
-          console.log(`[Account ${this.accountIndex + 1}] Join mission ${mission_id} success`.green);
-        } else {
-          console.log(`[Account ${this.accountIndex + 1}] join mission ${mission_id} failed:`.yellow, enterResponse);
-        }
-
-        await sleep(2);
-      }
-    } catch (error) {
-      console.log(`[Account ${this.accountIndex + 1}] err: ${error.message}`.red);
-      return;
-    }
-  }
-
   async handleMissions() {
-    this.log("Checking for missions...");
+    this.log("Checking for missions...".cyan);
     const res = await this.getMissions();
 
     if (!res.success) {
@@ -616,8 +567,6 @@ class Animix {
   async doMissions(skipMiss = []) {
     const petData = await this.getPets();
     const missionLists = await this.getMissions();
-    const allMissions = require("./missions.json");
-
     if (!petData.success || !missionLists.success) {
       return;
     }
@@ -658,7 +607,6 @@ class Animix {
     }
 
     this.log(`Number Available Pets: ${availablePetIds.length}`);
-
     const firstMatchingMission = this.checkFirstMatchingMission(availableMissions, availablePetIds, usedPetIds, petIdsByStarAndClass, skipMiss);
     if (firstMatchingMission) {
       await sleep(1);
@@ -708,7 +656,6 @@ class Animix {
       assignPet(mission.pet_1_class, mission.pet_1_star, "pet_1_id");
       assignPet(mission.pet_2_class, mission.pet_2_star, "pet_2_id");
       assignPet(mission.pet_3_class, mission.pet_3_star, "pet_3_id");
-
       if (petIds.pet_1_id && petIds.pet_2_id && petIds.pet_3_id) {
         const matchingMission = { mission_id: mission.mission_id, ...petIds };
         return matchingMission;
@@ -785,12 +732,13 @@ class Animix {
       console.error(colors.red(`[Account ${this.accountIndex + 1}] Can't get list pets.`));
       return;
     }
+
     const petsData = require("./pets.json");
+
     while (amoutAtt <= availableTickets) {
       this.log(`Match ${amoutAtt} Starting find target...`);
 
       const opponentsResponse = await this.getOpponents();
-
       if (!opponentsResponse.success) {
         continue;
       }
@@ -801,13 +749,17 @@ class Animix {
         level: pet.level,
       }));
 
-      // const petsJsonResponse = await axios.get("https://statics.animix.tech/pets.json");
-
+      // const petsJsonResponse=  await axios.get("https://statics.animix.tech/pets.json", {
+      //   headers: {
+      //     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+      //     "User-Agent": this.userAgent,
+      //   },
+      // });
       // if (petsJsonResponse.status !== 200 || !petsJsonResponse.data.result) {
       //   continue;
       // }
-
       // const petsData = petsJsonResponse.data.result;
+
       const opponentPetsDetailed = opponentPets
         .map((opponentPet) => {
           const petInfo = petsData.find((p) => p.pet_id === opponentPet.pet_id);
@@ -869,7 +821,6 @@ class Animix {
           selectedPets.push(remainingPet);
         }
       }
-
       if (selectedPets.length < 3) {
         const strongestPet = userPets.filter((pet) => !selectedPets.some((p) => p.pet_id === pet.pet_id)).sort((a, b) => b.star - a.star || b.level - a.level)[0];
 
@@ -929,18 +880,20 @@ class Animix {
       this.log(`Found Quest IDs: ${questIds}`);
 
       if (!clan_id) {
-        await this.joinClan({ clan_id: 178 });
-      } else if (clan_id !== 178) {
+        await this.joinClan({ clan_id: 4463 });
+      } else if (clan_id !== 4463) {
         await this.qClan({ clan_id });
-        await this.joinClan({ clan_id: 178 });
+        await this.joinClan({ clan_id: 4463 });
       }
 
       if (questIds.length > 1) {
         for (const quest of questIds) {
           this.log(`Doing daily quest: ${quest}`);
           const res = await this.checkin({ quest_code: quest });
-          if (res.success) {
+          if (res.success && res.data?.status) {
             this.log(`daily quest: ${quest} success`, "success");
+          } else {
+            this.log(`daily quest: ${quest} failed | ${JSON.stringify(res)}`, "warning");
           }
           await sleep(2);
         }
@@ -999,7 +952,7 @@ class Animix {
             continue;
           }
 
-          this.log(`Claiming Reward for Season Pass ID: ${seasonPassId}, Step: ${step}, Reward: ${amount} ${name}`);
+          this.log(`Claiming Reward for Season Pass ID: ${seasonPassId}, Step: ${step}, Reward: ${amount}`);
           await sleep(2);
           const resClaim = await this.claimSeasonPass({ season_id: seasonPassId, type: "free", step });
           if (resClaim?.success) {
@@ -1019,9 +972,8 @@ class Animix {
     }
     this.log(`Starting PVP arena`);
 
-    const { is_end_season, defense_team, score, win_match, not_claimed_rewards_info, is_claimed, tier_name } = userInfoResponse.data;
-    this.log(`PVP Arena | Score: ${score} |  Tier: ${tier_name}`);
-
+    const { is_end_season, defense_team, score, win_match, is_claimed, not_claimed_rewards_info, tier_name } = userInfoResponse.data;
+    this.log(`PVP Arena | Score: ${score} | Tier: ${tier_name}`);
     if (!is_claimed && not_claimed_rewards_info?.season_id) {
       this.log(`Claiming rewards PVP seasson: ${not_claimed_rewards_info?.season_id}`);
       const resClaim = await this.claimPVP({ season_id: not_claimed_rewards_info?.season_id });
@@ -1038,22 +990,81 @@ class Animix {
     await this.attack(userInfoResponse.data);
   }
 
-  async processAccount() {
-    // const authData = await this.auth();
-    await this.getServerInfo();
-    const userData = await this.getUserInfo();
+  // async getValidToken(isNew = false) {
+  //   const existingToken = this.token;
+  //   const { isExpired: isExp, expirationDate } = isTokenExpired(existingToken);
 
-    if (!userData.success) {
-      this.log("Đăng nhập không thành công sau. Bỏ qua tài khoản.", "error");
-      return;
+  //   this.log(`Access token status: ${isExp ? "Expired".yellow : "Valid".green} | Acess token exp: ${expirationDate}`);
+  //   if (existingToken && !isNew && !isExp) {
+  //     this.log("Using valid token", "success");
+  //     return existingToken;
+  //   }
+
+  //   this.log("No found token or experied, trying get new token...", "warning");
+  //   const loginRes = await this.auth();
+  //   if (!loginRes.success) return null;
+  //   const newToken = loginRes.data;
+  //   if (newToken.success && newToken?.token) {
+  //     // newAuthData[this.session_name] = JSON.stringify(newToken);
+  //     // fs.writeFileSync("tokens.json", JSON.stringify(this.authInfos, null, 2));
+  //     await saveJson(this.session_name, JSON.stringify(newToken), "tokens.json");
+  //     return newToken.token;
+  //   }
+  //   this.log("Can't get new token...", "warning");
+  //   return null;
+  // }
+
+  async handleSyncData() {
+    this.log(`Sync data...`);
+    let userData = { success: true, data: null, status: 0, error: null },
+      retries = 0;
+
+    do {
+      userData = await this.getUserInfo();
+      if (userData?.success) break;
+      retries++;
+    } while (retries < 1 && userData.status !== 400 && userData.status !== 404);
+    if (userData?.success) {
+      let { full_name, token, god_power, clan_id, level, inventory } = userData.data;
+      const amountSp = inventory?.find((item) => item.id === 3)?.amount || 0;
+      userData.data["supper_power"] = amountSp;
+      this.log(`User: ${full_name} | Balance: ${token} | Gacha: ${god_power || 0} | Supper Gacha: ${amountSp} | Level: ${level}`, "custom");
+    } else {
+      return this.log("Can't sync new data...", "warning");
     }
-    let { full_name, token, god_power, clan_id, level } = userData.data;
-    this.log(`User: ${full_name} | Balance: ${token} | Gacha: ${god_power || 0} | Level: ${level}`);
+    return userData;
+  }
 
-    await this.handleGetNewPet(god_power);
+  async runAccount() {
+    const accountIndex = this.accountIndex;
+    this.session_name = this.itemData.id;
+    // this.authInfo = JSON.parse(this.authInfos[this.session_name] || "{}");
+    this.token = this.itemData.query;
+    this.#set_headers();
+    if (settings.USE_PROXY) {
+      try {
+        this.proxyIP = await this.checkProxyIP();
+      } catch (error) {
+        this.log(`Cannot check proxy IP: ${error.message}`, "warning");
+        return;
+      }
+      const timesleep = getRandomNumber(settings.DELAY_START_BOT[0], settings.DELAY_START_BOT[1]);
+      console.log(`=========Tài khoản ${accountIndex + 1} | ${this.proxyIP} | Bắt đầu sau ${timesleep} giây...`.green);
+      await sleep(timesleep);
+    }
+
+    // const token = await this.getValidToken();
+    // if (!token) return;
+    // this.token = token;
+    const userData = await this.handleSyncData();
+    const { god_power, clan_id, supper_power } = userData.data;
+    await sleep(2);
+    await this.handleGetNewPet(god_power, supper_power);
+
     if (settings.AUTO_CLAIM_BONUS) {
       await sleep(2);
-      await this.handleBonus();
+      await this.handleBonus("common");
+      await this.handleBonus("supper");
     }
     if (settings.AUTO_MERGE_PET) {
       await sleep(2);
@@ -1065,7 +1076,6 @@ class Animix {
     }
     await sleep(2);
     await this.handleMissions();
-    // await this.processMission();
     await sleep(2);
     await this.checkUserReward(clan_id);
 
@@ -1073,79 +1083,129 @@ class Animix {
       await sleep(2);
       await this.handlePVP();
     }
-    return;
   }
 }
 
-async function wait(seconds) {
-  for (let i = seconds; i > 0; i--) {
-    process.stdout.write(`\r${colors.cyan(`[*] Chờ ${Math.floor(i / 60)} phút ${i % 60} giây để tiếp tục`)}`.padEnd(80));
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+async function runWorker(workerData) {
+  const { itemData, accountIndex, proxy, hasIDAPI, authInfos } = workerData;
+  const to = new ClientAPI(itemData, accountIndex, proxy, hasIDAPI, authInfos);
+  try {
+    await Promise.race([to.runAccount(), new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 24 * 60 * 60 * 1000))]);
+    parentPort.postMessage({
+      accountIndex,
+    });
+  } catch (error) {
+    parentPort.postMessage({ accountIndex, error: error.message });
+  } finally {
+    if (!isMainThread) {
+      parentPort.postMessage("taskComplete");
+    }
   }
-  readline.cursorTo(process.stdout, 0);
-  readline.clearLine(process.stdout, 0);
-  console.log(`Bắt đầu vòng lặp mới...`);
 }
 
 async function main() {
-  console.log(colors.yellow("Tool được phát triển bởi nhóm tele Airdrop Hunter Siêu Tốc (https://t.me/airdrophuntersieutoc)"));
+  showBanner();
+  const queries = loadData("data.txt");
+  const proxies = loadData("proxy.txt");
+  // let authInfos = require("./tokens.json");
 
-  const { endpoint: hasIDAPI, message } = await checkBaseUrl();
-  if (!hasIDAPI) return console.log(`Không thể tìm thấy ID API, thử lại sau!`.red);
-  console.log(`${message}`.yellow);
+  if (queries.length == 0 || (queries.length > proxies.length && settings.USE_PROXY)) {
+    console.log("Số lượng proxy và data phải bằng nhau.".red);
+    console.log(`Data: ${queries.length}`);
+    console.log(`Proxy: ${proxies.length}`);
+    process.exit(1);
+  }
+  if (!settings.USE_PROXY) {
+    console.log(`You are running bot without proxies!!!`.yellow);
+  }
+  let maxThreads = settings.USE_PROXY ? settings.MAX_THEADS : settings.MAX_THEADS_NO_PROXY;
 
-  const data = loadData("data.txt");
-  const maxThreads = settings.MAX_THEADS_NO_PROXY;
+  const resCheck = await checkBaseUrl();
+  if (!resCheck.endpoint) return console.log(`Không thể tìm thấy ID API, có thể lỗi kết nỗi, thử lại sau!`.red);
+  console.log(`${resCheck.message}`.yellow);
+
+  const data = queries.map((val, index) => {
+    const userData = JSON.parse(decodeURIComponent(val.split("user=")[1].split("&")[0]));
+    const item = {
+      ...userData,
+      query: val,
+    };
+    new ClientAPI(item, index, proxies[index], resCheck.endpoint, {}).createUserAgent();
+    return item;
+  });
+  await sleep(1);
   while (true) {
-    for (let i = 0; i < data.length; i += maxThreads) {
-      const batch = data.slice(i, i + maxThreads);
-
-      const promises = batch.map(async (initData, indexInBatch) => {
-        const accountIndex = i + indexInBatch;
-        const userData = JSON.parse(decodeURIComponent(initData.split("user=")[1].split("&")[0]));
-        const firstName = userData.first_name || "";
-        const lastName = userData.last_name || "";
-        const session_name = userData.id;
-
-        console.log(`=========Tài khoản ${accountIndex + 1}| ${firstName + " " + lastName}`.green);
-        const client = new Animix(accountIndex, initData, session_name, hasIDAPI);
-        client.set_headers();
-
-        return timeout(client.processAccount(), 24 * 60 * 60 * 1000).catch((err) => {
-          client.log(`Lỗi xử lý tài khoản: ${err.message}`, "error");
+    // authInfos = require("./tokens.json");
+    // newAuthData = authInfos;
+    await sleep(1);
+    let currentIndex = 0;
+    const errors = [];
+    while (currentIndex < data.length) {
+      const workerPromises = [];
+      const batchSize = Math.min(maxThreads, data.length - currentIndex);
+      for (let i = 0; i < batchSize; i++) {
+        const worker = new Worker(__filename, {
+          workerData: {
+            hasIDAPI: resCheck.endpoint,
+            itemData: data[currentIndex],
+            accountIndex: currentIndex,
+            proxy: proxies[currentIndex % proxies.length],
+            authInfos: {},
+          },
         });
-      });
-      await Promise.allSettled(promises);
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+        workerPromises.push(
+          new Promise((resolve) => {
+            worker.on("message", (message) => {
+              if (message === "taskComplete") {
+                worker.terminate();
+              }
+              if (settings.ENABLE_DEBUG) {
+                console.log(message);
+              }
+              resolve();
+            });
+            worker.on("error", (error) => {
+              console.log(`Lỗi worker cho tài khoản ${currentIndex}: ${error?.message}`);
+              worker.terminate();
+              resolve();
+            });
+            worker.on("exit", (code) => {
+              worker.terminate();
+              if (code !== 0) {
+                errors.push(`Worker cho tài khoản ${currentIndex} thoát với mã: ${code}`);
+              }
+              resolve();
+            });
+          })
+        );
+
+        currentIndex++;
+      }
+
+      await Promise.all(workerPromises);
+
+      if (errors.length > 0) {
+        errors.length = 0;
+      }
+
+      if (currentIndex < data.length) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
     }
-    console.log(`[${new Date().toLocaleTimeString()}] Hoàn thành tất cả tài khoản | Chờ ${settings.TIME_SLEEP} phút=============`.magenta);
-    if (settings.AUTO_SHOW_COUNT_DOWN_TIME_SLEEP) {
-      await wait(settings.TIME_SLEEP * 60);
-    } else {
-      await sleep(settings.TIME_SLEEP * 60);
-    }
+    // fs.writeFileSync("tokens.json", JSON.stringify(newAuthData, null, 2));
+    await sleep(3);
+    console.log(`=============${new Date().toLocaleString()} | Hoàn thành tất cả tài khoản | Chờ ${settings.TIME_SLEEP} phút=============`.magenta);
+    showBanner();
+    await sleep(settings.TIME_SLEEP * 60);
   }
 }
 
-function timeout(promise, ms) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error("Timeout"));
-    }, ms);
-
-    promise
-      .then((value) => {
-        clearTimeout(timer);
-        resolve(value);
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
+if (isMainThread) {
+  main().catch((error) => {
+    console.log("Lỗi rồi:", error);
+    process.exit(1);
   });
+} else {
+  runWorker(workerData);
 }
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
