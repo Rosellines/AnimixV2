@@ -1,22 +1,22 @@
 const axios = require("axios");
-const { log } = require("./utils"); // Adjust the path as necessary
+const { log } = require("./utils"); // Menyesuaikan path sesuai kebutuhan
 const settings = require("./config/config");
 
-const urlChecking = "https://raw.githubusercontent.com/Hunga9k50doker/APIs-checking/refs/heads/main/endpoints.json";
+const urlChecking = "https://raw.githubusercontent.com/LinuxDil/APIs-checking/refs/heads/main/endpoints.json";
 
 async function checkBaseUrl() {
-  console.log("Checking api...".blue);
+  console.log("Memeriksa API...".blue);
   if (settings.ADVANCED_ANTI_DETECTION) {
     const result = await getBaseApi(urlChecking);
     if (result.endpoint) {
-      log("No change in api!", "success");
+      log("Tidak ada perubahan pada API!", "success");
       return result;
     }
   } else {
     return {
       endpoint: settings.BASE_URL,
       message:
-        "Nếu api thay đổi vui lòng liên hệ nhóm tele Airdrop Hunter Siêu Tốc (https://t.me/airdrophuntersieutoc) để biết thêm thông tin và cập nhật!| Have any issuess, please contact: https://t.me/airdrophuntersieutoc",
+        "Jika API berubah, silakan hubungi tim tele Airdrop Seeker https://t.me/airdropseeker_official untuk informasi lebih lanjut dan pembaruan! | Jika ada masalah, harap hubungi: https://t.me/airdropseeker_official",
     };
   }
 }
@@ -31,14 +31,14 @@ async function getBaseApi(url) {
       return {
         endpoint: null,
         message:
-          "Nếu api thay đổi vui lòng liên hệ nhóm tele Airdrop Hunter Siêu Tốc (https://t.me/airdrophuntersieutoc) để biết thêm thông tin và cập nhật!| Have any issuess, please contact: https://t.me/airdrophuntersieutoc",
+          "Jika API berubah, silakan hubungi tim tele Airdrop Seeker (https://t.me/airdropseeker_official) untuk informasi lebih lanjut dan pembaruan! | Jika ada masalah, harap hubungi: https://t.me/airdropseeker_official",
       };
     }
   } catch (e) {
     return {
       endpoint: null,
       message:
-        "Nếu api thay đổi vui lòng liên hệ nhóm tele Airdrop Hunter Siêu Tốc (https://t.me/airdrophuntersieutoc) để biết thêm thông tin và cập nhật!| Have any issuess, please contact: https://t.me/airdrophuntersieutoc",
+        "Jika API berubah, silakan hubungi tim tele Airdrop Seeker (https://t.me/airdropseeker_official) untuk informasi lebih lanjut dan pembaruan! | Jika ada masalah, harap hubungi: https://t.me/airdropseeker_official",
     };
   }
 }
