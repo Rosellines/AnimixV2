@@ -3,7 +3,7 @@ const colors = require("colors");
 const path = require("path");
 require("dotenv").config();
 const { jwtDecode } = require("jwt-decode");
-const fsPromises = require("fs").promises; // Sử dụng fs.promises
+const fsPromises = require("fs").promises; // Menggunakan fs.promises
 const AsyncLock = require("async-lock");
 const lock = new AsyncLock();
 function _isArray(obj) {
@@ -50,19 +50,20 @@ function updateEnv(variable, value) {
 
     // Tạo hoặc cập nhật biến trong file
     const regex = new RegExp(`^${variable}=.*`, "m");
-    let newData = data.replace(regex, `${variable}=${value}`); // Sử dụng let thay vì const
+    let newData = data.replace(regex, `${variable}=${value}`); // Gunakan let alih-alih const
 
-    // Kiểm tra nếu biến không tồn tại trong file, thêm vào cuối
+    // Periksa jika variabel tidak ada dalam file, tambahkan di akhir.
+
     if (!regex.test(data)) {
       newData += `\n${variable}=${value}`;
     }
 
-    // Ghi lại file .env
+    // Menyimpan ke file .env
     fs.writeFile(envFilePath, newData, "utf8", (err) => {
       if (err) {
         console.error("Không thể ghi file .env:", err);
       } else {
-        // console.log(`Đã cập nhật ${variable} thành ${value}`);
+        // console.log(`Sudah diperbarui ${variable} Menjadi ${value}`);
       }
     });
   });
@@ -124,10 +125,10 @@ function isTokenExpired(token) {
 
 function generateRandomHash() {
   const characters = "0123456789abcdef";
-  let hash = "0x"; // Bắt đầu bằng "0x"
+  let hash = "0x"; // Dimulai dengan "0x"
 
   for (let i = 0; i < 64; i++) {
-    // 64 ký tự cho hash
+    // 64 Karakter untuk hash
     const randomIndex = Math.floor(Math.random() * characters.length);
     hash += characters[randomIndex];
   }
@@ -148,12 +149,12 @@ function loadData(file) {
   try {
     const datas = fs.readFileSync(file, "utf8").replace(/\r/g, "").split("\n").filter(Boolean);
     if (datas?.length <= 0) {
-      console.log(colors.red(`Không tìm thấy dữ liệu ${file}`));
+      console.log(colors.red(`Data tidak ditemukan ${file}`));
       return [];
     }
     return datas;
   } catch (error) {
-    console.log(`Không tìm thấy file ${file}`.red);
+    console.log(`Data tidak ditemukan ${file}`.red);
     return [];
   }
 }
@@ -218,8 +219,8 @@ function generateComplexId(length = 9) {
 }
 
 function getRandomNineDigitNumber() {
-  const min = 100000000; // Số 9 chữ số nhỏ nhất
-  const max = 999999999; // Số 9 chữ số lớn nhất
+  const min = 100000000; // Angka 9 dengan 9 digit terbesar
+const max = 999999999; // Angka 9 dengan 9 digit terbesar
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
