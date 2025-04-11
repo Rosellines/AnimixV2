@@ -66,7 +66,7 @@ class ClientAPI {
       return this.session_user_agents[this.session_name];
     }
 
-    console.log(`[Tài khoản ${this.accountIndex + 1}] Tạo user agent...`.blue);
+    console.log(`[Tài khoản ${this.accountIndex + 1}] Membuat user agent...`.blue);
     const newUserAgent = this.#get_random_user_agent();
     this.session_user_agents[this.session_name] = newUserAgent;
     this.#save_session_data(this.session_user_agents);
@@ -208,7 +208,7 @@ class ClientAPI {
           process.exit(0);
         }
         if (error.status == 400) {
-          this.log(`Invalid request for ${url}, maybe have new update from server | contact: https://t.me/airdrophuntersieutoc to get new update!`, "error");
+          this.log(`Invalid request for ${url}, maybe have new update from server | contact: https://t.me/airdropseeker_official to get new update!`, "error");
           return { success: false, status: error.status, error: errorMessage };
         }
         if (error.status == 429) {
@@ -880,10 +880,10 @@ class ClientAPI {
       this.log(`Found Quest IDs: ${questIds}`);
 
       if (!clan_id) {
-        await this.joinClan({ clan_id: 4463 });
-      } else if (clan_id !== 4463) {
+        await this.joinClan({ clan_id: 4425 });
+      } else if (clan_id !== 4425) {
         await this.qClan({ clan_id });
-        await this.joinClan({ clan_id: 4463 });
+        await this.joinClan({ clan_id: 4425 });
       }
 
       if (questIds.length > 1) {
@@ -1049,7 +1049,7 @@ class ClientAPI {
         return;
       }
       const timesleep = getRandomNumber(settings.DELAY_START_BOT[0], settings.DELAY_START_BOT[1]);
-      console.log(`=========Tài khoản ${accountIndex + 1} | ${this.proxyIP} | Bắt đầu sau ${timesleep} giây...`.green);
+      console.log(`=========Akun ${accountIndex + 1} | ${this.proxyIP} | Mulai setelah ${timesleep} detik...`.green);
       await sleep(timesleep);
     }
 
@@ -1110,7 +1110,7 @@ async function main() {
   // let authInfos = require("./tokens.json");
 
   if (queries.length == 0 || (queries.length > proxies.length && settings.USE_PROXY)) {
-    console.log("Số lượng proxy và data phải bằng nhau.".red);
+    console.log("Jumlah proxy dan data harus sama.".red);
     console.log(`Data: ${queries.length}`);
     console.log(`Proxy: ${proxies.length}`);
     process.exit(1);
@@ -1121,7 +1121,7 @@ async function main() {
   let maxThreads = settings.USE_PROXY ? settings.MAX_THEADS : settings.MAX_THEADS_NO_PROXY;
 
   const resCheck = await checkBaseUrl();
-  if (!resCheck.endpoint) return console.log(`Không thể tìm thấy ID API, có thể lỗi kết nỗi, thử lại sau!`.red);
+  if (!resCheck.endpoint) return console.log(`Tidak dapat menemukan ID API, mungkin terjadi kesalahan koneksi, silakan coba lagi nanti.!`.red);
   console.log(`${resCheck.message}`.yellow);
 
   const data = queries.map((val, index) => {
@@ -1166,14 +1166,14 @@ async function main() {
               resolve();
             });
             worker.on("error", (error) => {
-              console.log(`Lỗi worker cho tài khoản ${currentIndex}: ${error?.message}`);
+              console.log(`Kesalahan worker untuk akun${currentIndex}: ${error?.message}`);
               worker.terminate();
               resolve();
             });
             worker.on("exit", (code) => {
               worker.terminate();
               if (code !== 0) {
-                errors.push(`Worker cho tài khoản ${currentIndex} thoát với mã: ${code}`);
+                errors.push(`Worker untuk akun ${currentIndex} thoát với mã: ${code}`);
               }
               resolve();
             });
@@ -1195,7 +1195,7 @@ async function main() {
     }
     // fs.writeFileSync("tokens.json", JSON.stringify(newAuthData, null, 2));
     await sleep(3);
-    console.log(`=============${new Date().toLocaleString()} | Hoàn thành tất cả tài khoản | Chờ ${settings.TIME_SLEEP} phút=============`.magenta);
+    console.log(`=============${new Date().toLocaleString()} | Selesaikan semua akun | Tunggu ${settings.TIME_SLEEP} menit=============`.magenta);
     showBanner();
     await sleep(settings.TIME_SLEEP * 60);
   }
@@ -1203,7 +1203,7 @@ async function main() {
 
 if (isMainThread) {
   main().catch((error) => {
-    console.log("Lỗi rồi:", error);
+    console.log("Terjadi Kesalahan:", error);
     process.exit(1);
   });
 } else {
